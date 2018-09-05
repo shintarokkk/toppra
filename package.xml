@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package>
+  <name>toppra</name>
+  <version>0.2.0</version>
+  <description>
+    Forked from https://github.com/hungpham2511/toppra
+  </description>
+  <maintainer email="komatsu@jsk.imi.i.u-tokyo.ac.jp">Shintaro Komatsu</maintainer>
+  <license>MIT</license>
+  <author>Hung Pham</author>
+  <url type="repository">https://github.com/shintarokkk/toppra</url>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <export>
+  </export>
+
+</package>
