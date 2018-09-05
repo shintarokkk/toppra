@@ -74,6 +74,8 @@ class CanonicalLinearSecondOrderConstraint(CanonicalLinearConstraint):
         a = np.array(
             map(lambda (p_, ps_): self.inv_dyn(p_, v_zero, ps_), zip(p, ps))
         ) - c
+        print "orrig a[50] is"
+        print(a[50])
         b = np.array(
             map(lambda (p_, ps_, pss_): self.inv_dyn(p_, ps_, pss_), zip(p, ps, pss))
         ) - c

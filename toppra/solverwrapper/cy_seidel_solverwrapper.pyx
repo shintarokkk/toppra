@@ -369,7 +369,7 @@ cdef class seidelWrapper:
     """
     cdef:
         list constraints, _params
-        unsigned int N, nV, nC, nCons
+        unsigned int N, nV, nC, nCons, DoF, active_param_index
         double [:] path_discretization
         double [:] deltas
         double [:] a, b, c, low, high, a_1d, b_1d, v
@@ -414,6 +414,7 @@ cdef class seidelWrapper:
         self.nCons = nCons
         self.nC = 2
         self.nV = 2
+        self.DoF = 1 #assigne value
         self._params = []
         for i in range(nCons):
             if self.constraints[i].get_constraint_type() != ConstraintType.CanonicalLinear:
@@ -421,6 +422,8 @@ cdef class seidelWrapper:
             a, b, c, F, v, ubnd, xbnd = self.constraints[i].compute_constraint_params(
             self.path, self.path_discretization)
             if a is not None:
+                self.active_param_index = i
+                self.DoF = self.constraints[i].get_dof()
                 if self.constraints[i].identical:
                     self.nC += F.shape[0]
                 else:
@@ -622,7 +625,138 @@ cdef class seidelWrapper:
                 # print np.asarray(self.active_c_down)
                 
         return var
+    
+    # overload original solve_stagewise_optim
+    # @cython.profile(True)
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    cpdef solve_stagewise_optim_torque(self, unsigned int i, H, np.ndarray g, double x_min, double x_max, double x_next_min, double x_next_max):
+        """Solve a stage-wise linear optimization problem.
 
+        The linear optimization problem is described below.
+
+        .. math::
+            \\text{min  }  & [u, x] g    \\\\
+            \\text{s.t.  } & [u, x] \\text{ is feasible at stage } i \\\\
+                           & x_{min} \leq x \leq x_{max}             \\\\
+                           & x_{next, min} \leq x + 2 \Delta_i u \leq x_{next, max},
+
+        TODO if x_min == x_max, one can solve an LP instead of a 2D
+        LP. This optimization is currently not implemented.
+
+        Parameters
+        ----------
+        i: int
+            The stage index. See notes for details on each variable.
+        H: array or None
+            This term is not used and is neglected.
+        g: (d,)array
+            The linear term.
+        x_min: float
+            If not specified, set to NaN.
+        x_max: float
+            If not specified, set to NaN.
+        x_next_min: float
+            If not specified, set to NaN.
+        x_next_max: float
+            If not specified, set to NaN.
+        Returns
+        -------
+        double C array or list
+             If successes, return an array containing the optimal
+             variable.  Since NaN is also a valid double, this list
+             contains NaN if the optimization problem is infeasible.
+        """
+        assert i <= self.N and 0 <= i
+
+        # fill coefficient
+        cdef:
+            unsigned int k, cur_index = 0, j, nC  # indices
+            double [2] var  # Result
+            LpSol  # Solution struct to hold the 2D or 1D LP result
+            double low_arr[2], high_arr[2]
+            double[:] torque
+        low_arr[0] = self.low_arr[i, 0]
+        low_arr[1] = self.low_arr[i, 1]
+        high_arr[0] = self.high_arr[i, 0]
+        high_arr[1] = self.high_arr[i, 1]
+        torque = np.zeros(self.DoF)
+        
+        # handle x_min <= x_i <= x_max
+        if not isnan(x_min):
+            low_arr[1] = dbl_max(low_arr[1], x_min)
+        if not isnan(x_max):
+            high_arr[1] = dbl_min(high_arr[1], x_max)
+
+        # handle x_next_min <= 2 delta u + x_i <= x_next_max
+        if i < self.N:
+            if isnan(x_next_min):
+                self.a_arr[i, 0] = 0
+                self.b_arr[i, 0] = 0
+                self.c_arr[i, 0] = -1
+            else:
+                self.a_arr[i, 0] = - 2 * self.deltas[i]
+                self.b_arr[i, 0] = - 1.0
+                self.c_arr[i, 0] = x_next_min
+            if isnan(x_next_max):
+                self.a_arr[i, 1] = 0
+                self.b_arr[i, 1] = 0
+                self.c_arr[i, 1] = -1
+            else:
+                self.a_arr[i, 1] = 2 * self.deltas[i]
+                self.b_arr[i, 1] = 1.0
+                self.c_arr[i, 1] = - x_next_max
+        else:
+            # at last stage, do not consider this constraint
+            self.a_arr[i, 0:2] = 0
+            self.b_arr[i, 0:2] = 0
+            self.c_arr[i, 0:2] = -1
+
+        # handle the objective function
+        self.v[0] = - g[0]
+        self.v[1] = - g[1]
+
+        # warmstarting: two solvers can be selected, upper or lower,
+        # depending on the sign of g[1]
+        a_s = self._params[self.active_param_index][0][:,:self.DoF]
+        b_s = self._params[self.active_param_index][1][:,:self.DoF]
+        c_s = self._params[self.active_param_index][2][:,:self.DoF]
+        if g[1] > 0:  # choose upper solver
+            solution = cy_solve_lp2d(self.v, self.a_arr[i], self.b_arr[i], self.c_arr[i],
+                                     low_arr, high_arr, self.active_c_up,
+                                     True, self.index_map, self.a_1d, self.b_1d)
+            if solution.result == 0:
+                var[0] = NAN
+                var[1] = NAN
+            else:
+                var[:] = solution.optvar
+                self.active_c_up[0] = solution.active_c[0]
+                self.active_c_up[1] = solution.active_c[1]
+        else:  # chose lower solver
+            solution = cy_solve_lp2d(self.v, self.a_arr[i], self.b_arr[i], self.c_arr[i],
+                                     low_arr, high_arr, self.active_c_down,
+                                     True, self.index_map, self.a_1d, self.b_1d)
+            if solution.result == 0:
+                # print "v={:}\n a={:}\n b={:}\n c={:}\n low={:}\n high={:}".format(
+                #     *map(repr, map(np.asarray,
+                #                   [self.v, self.a_arr[i], self.b_arr[i], self.c_arr[i], self.low_arr[i], self.high_arr[i]])))
+                var[0] = NAN
+                var[1] = NAN
+                for j in range(self.DoF):
+                    torque[j] = NAN
+            else:
+                var[:] = solution.optvar
+                self.active_c_down[0] = solution.active_c[0]
+                self.active_c_down[1] = solution.active_c[1]
+                print("just before computation")
+                torque = a_s[i]*var[0] + b_s[i]*var[1] + c_s[i]
+                # print "v={:}\n a={:}\n b={:}\n c={:}\n low={:}\n high={:}\n result={:}\n-----".format(
+                #     *map(repr, map(np.asarray,
+                #                    [self.v, self.a_arr[i], self.b_arr[i], self.c_arr[i], self.low_arr[i], self.high_arr[i], var])))
+                # print np.asarray(self.active_c_down)
+                
+        return var, torque
+    
     def setup_solver(self):
         pass
 

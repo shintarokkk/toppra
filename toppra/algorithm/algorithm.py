@@ -42,7 +42,7 @@ class ParameterizationAlgorithm(object):
         for i in range(self._N):
             assert gridpoints[i + 1] > gridpoints[i]
 
-    def compute_parameterization(self, sd_start, sd_end):
+    def compute_parameterization(self, sd_start, sd_end, return_torque=False):
         """ Compute a path parameterization.
 
         If there is no valid parameterization, simply return None(s).
@@ -65,7 +65,7 @@ class ParameterizationAlgorithm(object):
         """
         raise NotImplementedError
 
-    def compute_trajectory(self, sd_start, sd_end, return_profile=False, bc_type='not-a-knot'):
+    def compute_trajectory(self, sd_start, sd_end, return_profile=False, bc_type='not-a-knot', return_torque=False):
         """ Compute the resulting joint trajectory and auxilliary trajectory.
 
         If parameterization fails, return a tuple of None(s).
@@ -87,7 +87,10 @@ class ParameterizationAlgorithm(object):
         profiles: tuple
             Return if return_profile is True, results from compute_parameterization.
         """
-        sdd_grid, sd_grid, v_grid, K = self.compute_parameterization(sd_start, sd_end, return_data=True)
+        if return_torque:
+            sdd_grid, sd_grid, v_grid, K, torque_array = self.compute_parameterization(sd_start, sd_end, return_data=True, return_torque=True)
+        else:
+            sdd_grid, sd_grid, v_grid, K = self.compute_parameterization(sd_start, sd_end, return_data=True, return_torque=False)
 
         if sd_grid is None:
             if return_profile:
@@ -108,6 +111,8 @@ class ParameterizationAlgorithm(object):
 
         q_grid = self.path.eval(self.gridpoints)
         traj_spline = SplineInterpolator(t_grid, q_grid, bc_type)
+        if return_torque:
+            torque_spline = SplineInterpolator(t_grid, torque_array, bc_type)
 
         if v_grid.shape[1] == 0:
             v_spline = None
@@ -118,6 +123,12 @@ class ParameterizationAlgorithm(object):
             v_spline = SplineInterpolator(t_grid, v_grid_)
 
         if return_profile:
-            return traj_spline, v_spline, (sdd_grid, sd_grid, v_grid, K)
+            if return_torque:
+                return traj_spline, v_spline, torque_spline, (sdd_grid, sd_grid, v_grid, K)
+            else:
+                return traj_spline, v_spline, (sdd_grid, sd_grid, v_grid, K)
         else:
-            return traj_spline, v_spline
+            if return_torque:
+                return traj_spline, v_spline, torque_spline
+            else:
+                return traj_spline, v_spline

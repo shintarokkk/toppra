@@ -173,7 +173,7 @@ class ReachabilityAlgorithm(ParameterizationAlgorithm):
         res[:] = [x_lower, x_upper]
         return res
 
-    def compute_parameterization(self, sd_start, sd_end, return_data=False):
+    def compute_parameterization(self, sd_start, sd_end, return_data=False, return_torque=False):
         """ Compute a path parameterization.
 
         If there is no valid parameterization, simply return None(s).
@@ -223,16 +223,25 @@ class ReachabilityAlgorithm(ParameterizationAlgorithm):
         xs[0] = x_start
         us = np.zeros(N)
         v_vec = np.zeros((N, self.solver_wrapper.get_no_vars() - 2))
+        _, torque_firststep = self._forward_step(0, xs[0], K[1], return_torque=return_torque)
+        if return_torque:
+            DoF = len(torque_firststep)
+            torque_arr = np.zeros((N+1, DoF))
 
         self.solver_wrapper.setup_solver()
         for i in range(self._N):
-            optim_res = self._forward_step(i, xs[i], K[i + 1])
+            if return_torque:
+                optim_res, torque_onestep = self._forward_step(i, xs[i], K[i + 1], return_torque=True)
+            else:
+                optim_res = self._forward_step(i, xs[i], K[i+1])
             if np.isnan(optim_res[0]):
                 logger.fatal("A numerical error occurs: The instance is controllable "
                              "but forward pass fails.")
                 us[i] = np.nan
                 xs[i + 1] = np.nan
                 v_vec[i] = np.nan
+                if return_torque:
+                    torque_arr[i] = np.full_like(np.zeros(DoF), np.nan)
             else:
                 us[i] = optim_res[0]
                 # The below function min( , max( ,)) ensure that the state x_{i+1} is controllable.
@@ -240,12 +249,20 @@ class ReachabilityAlgorithm(ParameterizationAlgorithm):
                 # numerical errors might violate this condition.
                 xs[i + 1] = min(K[i + 1, 1], max(K[i + 1, 0], xs[i] + 2 * deltas[i] * us[i] - SMALL))
                 v_vec[i] = optim_res[2:]
+                if return_torque:
+                    torque_arr[i] = np.asarray(torque_onestep)
             logger.debug("[Forward pass] u_{:d} = {:f}, x_{:d} = {:f}".format(i, us[i], i+1, xs[i+1]))
         self.solver_wrapper.close_solver()
 
         sd_vec = np.sqrt(xs)
         sdd_vec = np.copy(us)
         if return_data:
-            return sdd_vec, sd_vec, v_vec, K
+            if return_torque:
+                return sdd_vec, sd_vec, v_vec, K, torque_arr
+            else:
+                return sdd_vec, sd_vec, v_vec, K
         else:
-            return sdd_vec, sd_vec, v_vec
+            if return_torque:
+                return sdd_vec, sd_vec, v_vec, torque_arr
+            else:
+                return sdd_vec, sd_vec, v_vec
